@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
 from exceptions.global_exception import register_exception_handlers
-from routers import auth_router, task_router, refresh_router
+from routers import auth_router, task_router, refresh_router, websocket_router
 
 
 
@@ -22,3 +22,4 @@ register_exception_handlers(app)
 app.include_router(auth_router.router)
 app.include_router(refresh_router.router)
 app.include_router(task_router.router)
+app.include_router(websocket_router.router)
