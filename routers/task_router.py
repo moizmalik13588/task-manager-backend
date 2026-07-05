@@ -76,6 +76,12 @@ def update_task_by_id(task_id: int, task: Task, current_user: dict = Depends(che
     update_task.description = task.description
     db.commit()
     db.refresh(update_task)
+    r.publish(
+        f"user_notifications:{update_task.owner_id}",
+        f"Your task '{update_task.title}' was updated"
+    )
+    r.delete(f"user_tasks:{current_user['userId']}")
+
     return update_task
 
 
@@ -89,6 +95,7 @@ def delete_task_by_id(task_id: int, current_user: dict = Depends(check_current_u
 
     db.delete(delete_task)
     db.commit()
+    r.publish(f"user_notifications:{delete_task.owner_id}", f"Your task '{delete_task.title}' was deleted")
     return {"message": "task successfully deleted"}
 
 @router.get("/admin/all-tasks")

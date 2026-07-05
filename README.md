@@ -9,6 +9,7 @@ This project goes beyond basic CRUD to implement the authentication, authorizati
 ## Features
 
 ### Authentication & Session Security
+
 - User signup/login with bcrypt-hashed passwords
 - **HttpOnly cookie-based token delivery** — access and refresh tokens are never exposed to client-side JavaScript, closing the XSS token-theft vector that `localStorage`-based auth is vulnerable to
 - Short-lived access tokens (15 min) paired with long-lived refresh tokens (7 days)
@@ -18,32 +19,51 @@ This project goes beyond basic CRUD to implement the authentication, authorizati
 - Explicit logout endpoint that revokes the server-side token record and clears cookies
 
 ### Authorization
+
 - Role-based access control (RBAC) via a reusable, class-based `RoleChecker` dependency
 - Ownership-based authorization — users can only read, modify, or delete their own resources
 - Clear separation between `404` (resource doesn't exist) and `403` (resource exists, access denied)
 
 ### API Design
+
 - Full CRUD for tasks, scoped to the authenticated user
 - Pagination via `skip`/`limit` query parameters with total count in the response
 - Admin-only endpoint to view tasks across all users
 
+### Caching (Redis)
+
+- Task listing and admin "all tasks" endpoints are cached in Redis with a 60-second TTL, reducing repeated database load for frequently accessed data
+- Per-user cache keys (`user_tasks:{user_id}`) prevent cross-user data leakage between cached responses
+- Write operations (create/update/delete) explicitly invalidate the relevant cache entries, so clients never see stale data after a mutation
+- Caching was deliberately scoped to read-heavy, less volatile endpoints rather than applied blanket-wide — pagination is applied in-application after reading from cache, keeping invalidation simple and predictable
+
+### Event-Driven Notifications (Redis Pub/Sub)
+
+- Task update and delete operations publish events to per-user Redis channels (`user_notifications:{user_id}`)
+- A standalone notification worker (`notification_worker.py`) subscribes to these channels independently of the API process, decoupling the write path from notification delivery
+- This pattern keeps the core request/response cycle fast (publishing is fire-and-forget) while leaving room to extend delivery to email, push notifications, or WebSockets without touching business logic in the routers
+
 ### Security Hardening
+
 - Password strength validation (minimum length, uppercase, numeric character requirements)
 - Rate limiting on the login endpoint (5 requests/minute per IP) to mitigate brute-force attacks
 - Environment-based secrets management — no credentials or keys in source control
 - Sensitive fields (password hashes) are stripped from all API responses via Pydantic `response_model`
 
 ### Reliability & Observability
+
 - Global exception handler for unhandled errors, preventing internal stack traces from reaching clients
 - Custom, reusable exception helpers for domain errors (e.g. resource-not-found)
 - Request logging middleware (method, path, response time)
 - CORS middleware configured for frontend integration
 
 ### Data Layer
+
 - SQLAlchemy ORM with relational models (`User`, `Task`, `RefreshToken`)
 - Alembic for version-controlled, reversible database migrations
 
 ### Testing
+
 - `pytest` + FastAPI `TestClient` test suite covering auth and task flows
 - Isolated test database via dependency overrides and fixtures — tests never touch development data
 
@@ -51,16 +71,17 @@ This project goes beyond basic CRUD to implement the authentication, authorizati
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Framework | FastAPI |
-| Database | SQLAlchemy ORM (SQLite, portable to PostgreSQL) |
-| Migrations | Alembic |
-| Auth | JWT (python-jose), bcrypt (passlib), HttpOnly cookies |
-| Validation | Pydantic v2 |
-| Rate Limiting | SlowAPI |
-| Testing | Pytest, httpx |
-| Server | Uvicorn |
+| Layer               | Technology                                            |
+| ------------------- | ----------------------------------------------------- |
+| Framework           | FastAPI                                               |
+| Database            | SQLAlchemy ORM (SQLite, portable to PostgreSQL)       |
+| Migrations          | Alembic                                               |
+| Auth                | JWT (python-jose), bcrypt (passlib), HttpOnly cookies |
+| Validation          | Pydantic v2                                           |
+| Rate Limiting       | SlowAPI                                               |
+| Caching / Messaging | Redis (caching, rate-limit counters, Pub/Sub)         |
+| Testing             | Pytest, httpx                                         |
+| Server              | Uvicorn                                               |
 
 ---
 
@@ -95,6 +116,7 @@ task-manager-backend/
 │   └── test_main.py
 │
 ├── requirements.txt
+├── notification_worker.py        # Standalone Redis Pub/Sub subscriber
 └── .env                          # Not committed — see .env.example
 ```
 
@@ -103,12 +125,14 @@ task-manager-backend/
 ## Getting Started
 
 ### 1. Clone the repository
+
 ```bash
 git clone https://github.com/moizmalik13588/task-manager-backend.git
 cd task-manager-backend
 ```
 
 ### 2. Create a virtual environment
+
 ```bash
 python -m venv env
 source env/bin/activate      # Mac/Linux
@@ -116,12 +140,15 @@ env\Scripts\activate         # Windows
 ```
 
 ### 3. Install dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 4. Configure environment variables
+
 Create a `.env` file in the project root:
+
 ```
 SECRET_KEY=your-secret-key-here
 ALGORITHM=HS256
@@ -129,18 +156,35 @@ DATABASE_URL=sqlite:///./tasks.db
 ```
 
 Generate a secure secret key:
+
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
 ### 5. Run database migrations
+
 ```bash
 alembic upgrade head
 ```
 
-### 6. Start the server
+### 6. Start Redis
+
+```bash
+docker run -d -p 6379:6379 --name redis-server redis
+```
+
+### 7. Start the server
+
 ```bash
 uvicorn main:app --reload
+```
+
+### 8. (Optional) Start the notification worker
+
+In a separate terminal, to see task update/delete events being consumed in real time:
+
+```bash
+python notification_worker.py
 ```
 
 API available at `http://127.0.0.1:8000`, interactive docs at `http://127.0.0.1:8000/docs`.
@@ -159,19 +203,19 @@ pytest -v
 
 ## API Overview
 
-| Method | Endpoint | Description | Auth Required |
-|---|---|---|---|
-| POST | `/sign-up` | Register a new user | No |
-| POST | `/login` | Authenticate; sets `access_token` and `refresh_token` HttpOnly cookies | No |
-| POST | `/refresh-token` | Rotates the refresh token and issues a new access token | Cookie (refresh) |
-| POST | `/logout` | Revokes the server-side session and clears cookies | Cookie (refresh) |
-| GET | `/profile` | Get current user's profile | Yes |
-| POST | `/tasks` | Create a task | Yes |
-| GET | `/tasks?skip=0&limit=10` | List current user's tasks (paginated) | Yes |
-| GET | `/tasks/{task_id}` | Get a specific task | Yes |
-| PUT | `/tasks/{task_id}` | Update a task | Yes |
-| DELETE | `/tasks/{task_id}` | Delete a task | Yes |
-| GET | `/admin/all-tasks` | List all tasks (admin only) | Yes (admin role) |
+| Method | Endpoint                 | Description                                                            | Auth Required    |
+| ------ | ------------------------ | ---------------------------------------------------------------------- | ---------------- |
+| POST   | `/sign-up`               | Register a new user                                                    | No               |
+| POST   | `/login`                 | Authenticate; sets `access_token` and `refresh_token` HttpOnly cookies | No               |
+| POST   | `/refresh-token`         | Rotates the refresh token and issues a new access token                | Cookie (refresh) |
+| POST   | `/logout`                | Revokes the server-side session and clears cookies                     | Cookie (refresh) |
+| GET    | `/profile`               | Get current user's profile                                             | Yes              |
+| POST   | `/tasks`                 | Create a task                                                          | Yes              |
+| GET    | `/tasks?skip=0&limit=10` | List current user's tasks (paginated)                                  | Yes              |
+| GET    | `/tasks/{task_id}`       | Get a specific task                                                    | Yes              |
+| PUT    | `/tasks/{task_id}`       | Update a task                                                          | Yes              |
+| DELETE | `/tasks/{task_id}`       | Delete a task                                                          | Yes              |
+| GET    | `/admin/all-tasks`       | List all tasks (admin only)                                            | Yes (admin role) |
 
 Full interactive documentation is available via Swagger UI at `/docs`.
 
@@ -203,6 +247,8 @@ Full interactive documentation is available via Swagger UI at `/docs`.
 - **Refresh token rotation**: Rather than treating a refresh token as valid for its entire lifetime, each use invalidates it and issues a replacement. This bounds the damage from a leaked refresh token to a single use.
 - **Database-tracked sessions**: JWTs are normally stateless, which means there's no way to revoke one before it expires. Storing a hash of the refresh token server-side reintroduces the ability to revoke sessions on logout or on suspicious activity, without giving up the performance benefits of JWT for access tokens.
 - **Upsert on login**: Refresh token records are updated in place per user rather than accumulating a new row per login, keeping the table bounded and enforcing a single active session per user.
+- **Selective caching over blanket caching**: Redis caching is applied to read-heavy, less time-sensitive endpoints (task listings, admin views) rather than every route. Every write path that could invalidate a cached result explicitly clears it, avoiding the stale-data bugs that come from caching without a clear invalidation strategy.
+- **Decoupled notifications via Pub/Sub**: Rather than sending notifications synchronously inside the request/response cycle, task mutations publish events to Redis and a separate worker process consumes them. This keeps write endpoints fast and makes notification delivery a swappable concern.
 - **Layered architecture**: Routing, schemas, security logic, and exception handling are separated into distinct modules, making the codebase easier to navigate, test, and extend.
 - **Ownership checks over blanket permissions**: Every task operation verifies the requesting user owns the resource, distinguishing `403` (forbidden) from `404` (not found) rather than collapsing both into a generic error.
 
