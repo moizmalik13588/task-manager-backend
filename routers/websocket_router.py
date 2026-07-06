@@ -1,12 +1,21 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, status
+from auth.auth_security import decode_access_token
 import redis.asyncio as aioredis
+
 
 router = APIRouter()
 
-@router.websocket("/ws/notifications/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: int):
+@router.websocket("/ws/notifications")
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
+    payload = decode_access_token(token)
+    if payload is None or payload.get("type") != "access":
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return 
+    
+    user_id = payload['userId']
+
     await websocket.accept()
-    print(f"User {user_id} connected via WebSocket")
+    print(f"User {user_id} ({payload['username']}) connected via WebSocket")
 
     redis_client = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
     pubsub = redis_client.pubsub()
